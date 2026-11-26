@@ -398,3 +398,7 @@ Kết quả chạy đầy đủ `python check_production_ready.py` trong `06-lab
   - *Đã hỏi AI:* Hướng dẫn deploy `06-lab-complete/` lên Railway kèm Redis, kiểm tra an toàn ảnh chụp màn hình trước khi lưu, so sánh `railway.toml` vs `render.yaml` và tóm tắt pipeline Cloud Run (`cloudbuild.yaml`, `service.yaml`).
   - *Đã nhận:* Các bước cấu hình Root Directory, Variables trên Railway, 4 lệnh test CP6 không lộ key, mẫu `DEPLOYMENT.md` và bảng so sánh cấu hình.
   - *Tự kiểm tra:* Tự deploy lên Railway kèm Redis, tự chạy 4 lệnh `curl` kiểm tra Public URL xác nhận mã HTTP `200`, `200`, `401`, `200` và kiểm tra body JSON từ `/ready` và `/ask`.
+- **CP7 (Part 7 Bước 1):**
+  - *Đã hỏi AI:* Phân tích 9 file JSON load test/eval ban đầu, đề xuất bổ sung 2 entry (`["hpa", "kubernetes", "autoscal"]` và `["jwt"]`) vào `KNOWLEDGE_BASE` trong `mock_llm.py`, tạo CI quality gate `.github/workflows/eval.yml` và điền `BENCHMARK_REPORT.md` Mục 1–3.
+  - *Đã nhận:* Mã nguồn cập nhật `mock_llm.py` (develop & production), `.github/workflows/eval.yml` và bảng số liệu đối chiếu khớp file JSON.
+  - *Tự kiểm tra:* Tự chạy toàn bộ load test (`c=1, 10, 50, 100` và `MOCK_SLOW_RATE=0, 0.03, 0.1`), tự chạy eval `v1`, `v2` và `eval_v2_fixed.json` xác nhận đạt `23/23 (100.0%)` với `0` regression.
