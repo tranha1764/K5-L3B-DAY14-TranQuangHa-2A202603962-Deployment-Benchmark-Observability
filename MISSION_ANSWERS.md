@@ -141,7 +141,36 @@ curl -s -X POST http://127.0.0.1/ask -H "Content-Type: application/json" -d '{"q
 
 ## Part 3: Cloud Deployment
 
-*(Đang chờ hoàn thành CP6)*
+### Exercise 3.1: Railway Deployment (Agent Part 6 — `06-lab-complete/`)
+
+- **Public URL:** https://k5-l3b-day14-tranquangha-2a202603962-deployment-production.up.railway.app
+- **Cấu hình trên Railway:** Deploy trực tiếp thư mục `06-lab-complete/` bằng `Dockerfile` multi-stage, nối dịch vụ **Redis** qua `REDIS_URL=${{Redis.REDIS_URL}}`, đặt `AGENT_API_KEY`, `ENVIRONMENT=production`, `RATE_LIMIT_PER_MINUTE=10`, `DAILY_BUDGET_USD=1.0` trên Railway Variables.
+- **Screenshots:**
+  - Dashboard & Env Vars (đã ẩn key): [screenshots/dashboard.png](screenshots/dashboard.png)
+  - Trạng thái chạy `ACTIVE`: [screenshots/running.png](screenshots/running.png)
+  - Kết quả tự kiểm tra 4 lệnh CP6: [screenshots/test.png](screenshots/test.png)
+- **Kết quả kiểm tra Public URL (4 lệnh chuẩn CP6):**
+
+```text
+GET  /health              → 200
+GET  /ready               → 200
+POST /ask (không API key) → 401
+POST /ask (có X-API-Key)  → 200
+```
+
+### Exercise 3.2: So sánh `railway.toml` với `render.yaml`
+
+| Tiêu chí | `railway.toml` | `render.yaml` |
+| --- | --- | --- |
+| **Định dạng & Phạm vi** | **TOML**, gọn nhẹ, cấu hình **cho 1 service** (cách build, start, healthcheck, restart policy). | **YAML (Blueprint / IaC)**, có thể khai báo **cả hệ thống nhiều service** (web service + Redis + `envVars`) trong một file. |
+| **Build & Runtime** | Chỉ định `builder = "DOCKERFILE"` (hoặc `NIXPACKS`), `dockerfilePath`. | Khai báo rõ `type: web`, `runtime: docker` (hoặc `python`), `region`, `plan` (`free`), `buildCommand` / `startCommand`. |
+| **Biến môi trường & Secret** | Không khai báo env/secret trong `railway.toml` — quản lý riêng trên Dashboard/CLI (`${{Redis.REDIS_URL}}`). | Khai báo trực tiếp danh sách `envVars` trong YAML và hỗ trợ sinh/ẩn secret an toàn (`generateValue: true`, `sync: false`). |
+| **Vì sao khác nhau?** | Railway ưu tiên tối giản cấu hình per-service, quản lý biến môi trường và Redis trực tiếp qua Project Canvas/CLI. | Render dùng Blueprint YAML để mô tả toàn bộ stack dưới dạng Infrastructure-as-Code ngay từ Git. |
+
+### Exercise 3.3: GCP Cloud Run CI/CD Pipeline (`03-cloud-deployment/production-cloud-run/`)
+
+- **`cloudbuild.yaml`:** Định nghĩa pipeline CI/CD 4 bước chạy tuần tự (dùng `waitFor`) khi push lên `main`: **(1) `test`** chạy `pytest` trong container `python:3.11-slim`, **(2) `build`** Docker image gắn tag `$COMMIT_SHA` và `:latest` có `--cache-from`, **(3) `push`** image lên Container Registry (`gcr.io/$PROJECT_ID/ai-agent`), và **(4) `deploy`** lên Cloud Run region `asia-southeast1` (`--min-instances=1` tránh cold start, `--max-instances=10`, lấy secret từ Secret Manager).
+- **`service.yaml`:** File IaC chuẩn Knative (`serving.knative.dev/v1`) mô tả cấu hình runtime của service Cloud Run gồm giới hạn scale (`minScale: 1`, `maxScale: 10`), `containerConcurrency: 80`, CPU/RAM (`limits`/`requests`), inject secret qua `secretKeyRef`, và tách riêng `livenessProbe` (`/health`) với `startupProbe` (`/ready`).
 
 ---
 
@@ -365,3 +394,7 @@ Kết quả chạy đầy đủ `python check_production_ready.py` trong `06-lab
   - *Đã hỏi AI:* Thiết kế và triển khai toàn bộ các TODO trong `06-lab-complete/` (config env, Redis client, API key auth, Redis sliding-window rate limiter, Redis cost guard, structured JSON logging, lifespan graceful shutdown, multi-stage Dockerfile, docker-compose, `.dockerignore`, `.env.example`, `railway.toml`, `render.yaml`).
   - *Đã nhận:* Kế hoạch chi tiết và mã nguồn cho 12 file trong `06-lab-complete/`.
   - *Tự kiểm tra:* Tự chạy `python check_production_ready.py` đầy đủ trong WSL2 có Docker và xác nhận đạt `12/12 tiêu chí · 43/43 checks passed` (`PASS 12/12`).
+- **CP6 (Part 3):**
+  - *Đã hỏi AI:* Hướng dẫn deploy `06-lab-complete/` lên Railway kèm Redis, kiểm tra an toàn ảnh chụp màn hình trước khi lưu, so sánh `railway.toml` vs `render.yaml` và tóm tắt pipeline Cloud Run (`cloudbuild.yaml`, `service.yaml`).
+  - *Đã nhận:* Các bước cấu hình Root Directory, Variables trên Railway, 4 lệnh test CP6 không lộ key, mẫu `DEPLOYMENT.md` và bảng so sánh cấu hình.
+  - *Tự kiểm tra:* Tự deploy lên Railway kèm Redis, tự chạy 4 lệnh `curl` kiểm tra Public URL xác nhận mã HTTP `200`, `200`, `401`, `200` và kiểm tra body JSON từ `/ready` và `/ask`.
