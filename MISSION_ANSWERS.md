@@ -71,7 +71,71 @@ Bảng so sánh:
 
 ## Part 2: Docker
 
-*(Đang chờ hoàn thành CP2)*
+### Exercise 2.1: Dockerfile questions (`02-docker/develop/Dockerfile`)
+
+1. **Base image:** `python:3.11` (dòng 8) — image đầy đủ gồm Debian và toàn bộ bộ công cụ Python/build tools (~1 GB+).
+2. **Working directory:** `/app` (dòng 11: `WORKDIR /app`) — mọi lệnh `COPY`, `RUN`, `CMD` phía sau chạy trong thư mục này.
+3. **Tại sao `COPY requirements.txt` trước khi `COPY` code?** Tận dụng **Docker layer cache**. File `requirements.txt` ít thay đổi hơn mã nguồn (`app.py`), nên khi chỉ sửa code, Docker tái sử dụng cache tầng `pip install` thay vì tải và cài lại toàn bộ dependencies.
+4. **`CMD` vs `ENTRYPOINT`:**
+   - `CMD` đặt lệnh/tham số mặc định khi container khởi động và **có thể ghi đè trực tiếp** bằng tham số truyền vào sau tên image trong `docker run`.
+   - `ENTRYPOINT` cố định tiến trình chính của container (tham số truyền thêm ở `docker run` hoặc `CMD` sẽ được nối làm đối số cho `ENTRYPOINT`), chỉ ghi đè khi dùng cờ `--entrypoint`.
+
+### Exercise 2.2: Build và test container `develop`
+
+Build từ thư mục gốc repo (`docker build -f 02-docker/develop/Dockerfile -t my-agent:develop .`), chạy container map cổng `8000:8000` và kiểm tra:
+
+```bash
+curl -s http://127.0.0.1:8000/health
+# {"status":"ok","uptime_seconds":21.8,"container":true}
+
+curl -s -X POST "http://127.0.0.1:8000/ask?question=What%20is%20Docker%3F"
+# {"answer":"Container là cách đóng gói app để chạy ở mọi nơi. Build once, run anywhere!"}
+```
+
+### Exercise 2.3: Multi-stage build & Image size comparison
+
+- **Stage 1 (`builder`):** Dùng `python:3.11-slim`, cài `gcc` và `libpq-dev` để compile dependencies, cài gói Python bằng `pip install --no-cache-dir --user` vào `/root/.local`.
+- **Stage 2 (`runtime`):** Bắt đầu từ `python:3.11-slim` sạch, tạo user non-root `appuser`, chỉ `COPY --from=builder /root/.local /home/appuser/.local`, copy `main.py` và `utils/mock_llm.py`, cấu hình `HEALTHCHECK` và `CMD ["uvicorn", ...]`.
+- **Tại sao image nhỏ hơn?** Loại bỏ hoàn toàn compiler (`gcc`, `libpq-dev`), package cache và lớp base image nặng của Python full, chỉ giữ runtime cần thiết nên vừa gọn nhẹ vừa an toàn hơn.
+
+Kết quả đo bằng `docker images | grep my-agent`:
+
+- **Develop (`my-agent:develop`):** `1.67 GB` (`1,670 MB`, content size `426 MB`)
+- **Production (`my-agent:advanced`):** `240 MB` (content size `57.4 MB`)
+- **Chênh lệch (giảm):** `1,670 - 240 = 1,430 MB` → giảm **85.6%**
+
+### Exercise 2.4: Docker Compose stack & test qua Nginx
+
+**Sơ đồ kiến trúc các service (`02-docker/production/docker-compose.yml`, network `internal`):**
+
+```text
+Client ──(:80)──▶ Nginx (reverse proxy, rate limit 10r/s)
+                     │
+                     ▼ (proxy_pass http://agent:8000)
+                   Agent (FastAPI, port 8000 nội bộ)
+                     ├──▶ Redis (:6379, session cache & rate limiting)
+                     └──▶ Qdrant (:6333, vector database cho RAG)
+```
+
+Trạng thái stack (`docker compose -p k5-day14-docker -f 02-docker/production/docker-compose.yml ps`):
+
+```text
+NAME                       IMAGE                   SERVICE   STATUS
+k5-day14-docker-agent-1    k5-day14-docker-agent   agent     Up 20 seconds (healthy)
+k5-day14-docker-nginx-1    nginx:alpine            nginx     Up 20 seconds
+k5-day14-docker-qdrant-1   qdrant/qdrant:v1.9.0    qdrant    Up 34 seconds (healthy)
+k5-day14-docker-redis-1    redis:7-alpine          redis     Up 33 seconds (healthy)
+```
+
+Kết quả test qua Nginx (cổng `80`):
+
+```bash
+curl -s http://127.0.0.1/health
+# {"status":"ok","uptime_seconds":28.1,"version":"2.0.0","timestamp":"2026-11-26T08:51:19.015301"}
+
+curl -s -X POST http://127.0.0.1/ask -H "Content-Type: application/json" -d '{"question": "Explain microservices"}'
+# {"answer":"Tôi là AI agent được deploy lên cloud. Câu hỏi của bạn đã được nhận."}
+```
 
 ---
 
@@ -105,3 +169,7 @@ Bảng so sánh:
   - *Đã hỏi AI:* Phân tích các anti-pattern trong `01-localhost-vs-production/develop/app.py`, đối chiếu với `01-localhost-vs-production/production/app.py` và `config.py`, hướng dẫn chạy trong môi trường WSL2 venv.
   - *Đã nhận:* Danh sách 7 anti-pattern kèm số dòng, bảng so sánh theo 12-Factor, lệnh test chuẩn cho bản `develop` (query param) và `production` (JSON).
   - *Tự kiểm tra:* Tự tạo virtualenv trong WSL2 (`posix`, Python 3.12.3), chạy trực tiếp cả 2 server `develop` và `production`, tự gọi `curl` vào `/ask`, `/health`, `/ready` và xác nhận kết quả thực tế trước khi ghi vào bài.
+- **CP2 (Part 2):**
+  - *Đã hỏi AI:* Hướng dẫn giải quyết xung đột cổng 8000 (`wslrelay.exe`), lỗi giới hạn Docker Hub `429 Too Many Requests`, giải thích `02-docker/develop/Dockerfile`, `02-docker/production/Dockerfile`, `docker-compose.yml` và tính % giảm dung lượng.
+  - *Đã nhận:* Các lệnh build/run từ gốc repo và cấu trúc giải thích multi-stage + sơ đồ Docker Compose.
+  - *Tự kiểm tra:* Tự build `my-agent:develop` (`1.67GB`) và `my-agent:advanced` (`240MB`), tự chạy container và Docker Compose stack 4 service, tự gọi `curl` kiểm tra `/health` và `/ask` qua cả container lẫn Nginx trước khi ghi số đo thật vào bài.
