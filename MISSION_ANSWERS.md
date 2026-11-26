@@ -402,3 +402,7 @@ Kết quả chạy đầy đủ `python check_production_ready.py` trong `06-lab
   - *Đã hỏi AI:* Phân tích 9 file JSON load test/eval ban đầu, đề xuất bổ sung 2 entry (`["hpa", "kubernetes", "autoscal"]` và `["jwt"]`) vào `KNOWLEDGE_BASE` trong `mock_llm.py`, tạo CI quality gate `.github/workflows/eval.yml` và điền `BENCHMARK_REPORT.md` Mục 1–3.
   - *Đã nhận:* Mã nguồn cập nhật `mock_llm.py` (develop & production), `.github/workflows/eval.yml` và bảng số liệu đối chiếu khớp file JSON.
   - *Tự kiểm tra:* Tự chạy toàn bộ load test (`c=1, 10, 50, 100` và `MOCK_SLOW_RATE=0, 0.03, 0.1`), tự chạy eval `v1`, `v2` và `eval_v2_fixed.json` xác nhận đạt `23/23 (100.0%)` với `0` regression.
+- **CP8 (Part 7 Bước 2):**
+  - *Đã hỏi AI:* Debug lỗi `ModuleNotFoundError: No module named 'uvicorn'` trong `06-lab-complete/benchmark-observability/production/Dockerfile`, hướng dẫn vận hành full stack (`-p k5-day14-observability`), chạy đo kiểm bổ sung Exercise 7.4/7.6 và hoàn thiện `BENCHMARK_REPORT.md`.
+  - *Đã nhận:* Bổ sung `ENV PYTHONUSERBASE=/home/agent/.local` vào `production/Dockerfile` (khớp với pattern ở Part 5), cấu trúc đối chiếu số liệu từ CSV/Prometheus/Jaeger.
+  - *Tự kiểm tra:* Tự chạy `locust` headless tạo `scale_1_stats.csv` và `scale_3_stats.csv` sau khi fix Dockerfile, tự chạy Locust UI xem Grafana, truy vết trace chậm (`2dc21e16efa3cfe05c6661336f75a1f5`) & trace lỗi (`1062d42657c7929632ca419ad78233f0`) kèm JSON log, kích hoạt 2 alert `AgentHighErrorRate` + `AgentHighLatencyP95` cùng firing trên Prometheus (`promtool test rules` → `SUCCESS`).

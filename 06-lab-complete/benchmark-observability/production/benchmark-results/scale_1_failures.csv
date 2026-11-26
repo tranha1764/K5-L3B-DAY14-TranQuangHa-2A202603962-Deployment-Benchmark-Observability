@@ -1,0 +1,2 @@
+Method,Name,Error,Occurrences,First Seen,Last Seen
+POST,/ask,HTTPError('503 Server Error: Service Unavailable for url: /ask'),70,2026-11-26T14:56:54Z,2026-11-26T14:58:55Z
