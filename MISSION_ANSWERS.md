@@ -147,7 +147,83 @@ curl -s -X POST http://127.0.0.1/ask -H "Content-Type: application/json" -d '{"q
 
 ## Part 4: API Security
 
-*(Đang chờ hoàn thành CP3)*
+### Exercise 4.1: API Key Authentication (`04-api-gateway/develop/app.py`)
+
+- **API key được kiểm tra ở đâu?** Tại hàm `verify_api_key` (dòng 39–54) đọc header `X-API-Key` bằng `APIKeyHeader(name="X-API-Key", auto_error=False)`, và được gắn vào endpoint `/ask` thông qua `Depends(verify_api_key)` (dòng 70).
+- **Điều gì xảy ra nếu thiếu hoặc sai key?** Thiếu header trả về `HTTP 401 Unauthorized`; gửi sai key trả về `HTTP 403 Forbidden` (không vào được logic xử lý LLM).
+- **Cách rotate key:** Đọc danh sách key hợp lệ từ biến môi trường (vd hỗ trợ tạm thời cả key cũ và key mới trong khoảng thời gian chuyển tiếp), cập nhật client sang key mới, rồi gỡ key cũ khỏi env và restart/reload service.
+
+Kết quả test thực tế (`AGENT_API_KEY=secret-key-123 python app.py`):
+
+```http
+# 1. Không có key → 401
+HTTP/1.1 401 Unauthorized
+content-type: application/json
+
+{"detail":"Missing API key. Include header: X-API-Key: <your-key>"}
+
+# 2. Sai key → 403
+HTTP/1.1 403 Forbidden
+content-type: application/json
+
+{"detail":"Invalid API key."}
+
+# 3. Đúng key → 200
+HTTP/1.1 200 OK
+content-type: application/json
+
+{"question":"Hello","answer":"Tôi là AI agent được deploy lên cloud. Câu hỏi của bạn đã được nhận."}
+```
+
+### Exercise 4.2 & 4.3: JWT Authentication & Rate Limiting (`04-api-gateway/production/`)
+
+- **JWT Flow (`auth.py`, `app.py`):** Client gửi `username`/`password` (`student` / `demo123`) tới `POST /auth/token` → server xác thực và ký JWT (`HS256`, hết hạn sau 60 phút, chứa `sub` và `role`). Các request sau gửi `Authorization: Bearer <TOKEN>` → `verify_token` giải mã và kiểm tra chữ ký + thời hạn mà không cần tra database mỗi request.
+- **Thuật toán Rate Limit (`rate_limiter.py`):** **Sliding Window Counter** sử dụng `collections.deque` (lưu timestamps các request trong cửa sổ `window_seconds = 60`). Mỗi request mới sẽ loại bỏ các timestamp cũ hơn `now - 60`, kiểm tra số lượng còn lại:
+  - **Limit:** `10 requests/phút` cho `user` (`student`), `100 requests/phút` cho `admin` (`teacher`).
+  - **Cách phân biệt/bypass cho admin:** Tại `app.py` dòng 141 (`limiter = rate_limiter_admin if role == "admin" else rate_limiter_user`), dựa vào `role` trong JWT payload để chọn giới hạn cao hơn (hoặc bỏ qua check nếu `role == "admin"`).
+
+Kết quả lấy token cho `student`, gọi `/ask` (`200`), kiểm tra `/me/usage` và spam 12 request (đã che `<TOKEN>`):
+
+```http
+# Gọi /ask với Bearer <TOKEN> → 200 OK (kèm security headers)
+HTTP/1.1 200 OK
+x-content-type-options: nosniff
+x-frame-options: DENY
+x-xss-protection: 1; mode=block
+referrer-policy: strict-origin-when-cross-origin
+
+{"question":"Explain JWT","answer":"Tôi là AI agent được deploy lên cloud. Câu hỏi của bạn đã được nhận.","usage":{"requests_remaining":9,"budget_remaining_usd":1.9e-05}}
+
+# GET /me/usage
+{"user_id":"student","date":"2026-11-26","requests":1,"input_tokens":4,"output_tokens":30,"cost_usd":1.9e-05,"budget_usd":1.0,"budget_remaining_usd":0.999981,"budget_used_pct":0.0}
+```
+
+Vòng lặp gọi liên tiếp (Request 2 → Request 12) bằng token của `student`:
+
+```text
+=== Request 2 ===
+HTTP/1.1 200 OK
+{"question":"Test 2","answer":"Tôi là AI agent được deploy lên cloud. Câu hỏi của bạn đã được nhận.","usage":{"requests_remaining":8,"budget_remaining_usd":3.7e-05}}
+...
+=== Request 10 ===
+HTTP/1.1 200 OK
+{"question":"Test 10","answer":"Tôi là AI agent được deploy lên cloud. Câu hỏi của bạn đã được nhận.","usage":{"requests_remaining":0,"budget_remaining_usd":0.000181}}
+=== Request 11 ===
+HTTP/1.1 429 Too Many Requests
+{"detail":{"error":"Rate limit exceeded","limit":10,"window_seconds":60,"retry_after_seconds":46}}
+=== Request 12 ===
+HTTP/1.1 429 Too Many Requests
+{"detail":{"error":"Rate limit exceeded","limit":10,"window_seconds":60,"retry_after_seconds":46}}
+```
+
+### Exercise 4.4: Cost Guard (`04-api-gateway/production/cost_guard.py`)
+
+- **Cách triển khai:**
+  1. **Trước khi gọi LLM (`check_budget`):** Đọc tổng chi phí đã dùng trong ngày/tháng (demo lưu trong `UsageRecord` in-memory; production lưu trong **Redis** theo key `budget:{user_id}:{YYYY-MM-DD}` hoặc theo tháng). Nếu đạt hoặc vượt ngưỡng (`daily_budget_usd = $1.0` hoặc global `$10.0`), chặn ngay bằng **`HTTP 402 Payment Required`** (hoặc `503` cho global limit) trước khi phát sinh chi phí gọi LLM; cảnh báo khi đạt `80%`.
+  2. **Sau khi gọi LLM (`record_usage`):** Đếm `input_tokens` và `output_tokens`, nhân với đơn giá từng loại (`$0.00015 / 1K input`, `$0.0006 / 1K output`), rồi cộng dồn vào Redis bằng lệnh atomic `INCRBYFLOAT` kèm `EXPIRE` để tự reset sang chu kỳ mới.
+- **Tại sao cần cả Rate Limit lẫn Cost Guard?**
+  - **Rate Limit** bảo vệ **tốc độ truy cập** (ngăn spam/DDoS, quá tải CPU/worker trong từng phút).
+  - **Cost Guard** bảo vệ **ngân sách tiền thật** (vì kẻ tấn công vẫn có thể gọi chậm dưới ngưỡng rate limit nhưng gửi prompt dài/chạy đều 24/7 làm cạn tiền API).
 
 ---
 
@@ -173,3 +249,7 @@ curl -s -X POST http://127.0.0.1/ask -H "Content-Type: application/json" -d '{"q
   - *Đã hỏi AI:* Hướng dẫn giải quyết xung đột cổng 8000 (`wslrelay.exe`), lỗi giới hạn Docker Hub `429 Too Many Requests`, giải thích `02-docker/develop/Dockerfile`, `02-docker/production/Dockerfile`, `docker-compose.yml` và tính % giảm dung lượng.
   - *Đã nhận:* Các lệnh build/run từ gốc repo và cấu trúc giải thích multi-stage + sơ đồ Docker Compose.
   - *Tự kiểm tra:* Tự build `my-agent:develop` (`1.67GB`) và `my-agent:advanced` (`240MB`), tự chạy container và Docker Compose stack 4 service, tự gọi `curl` kiểm tra `/health` và `/ask` qua cả container lẫn Nginx trước khi ghi số đo thật vào bài.
+- **CP3 (Part 4):**
+  - *Đã hỏi AI:* Hướng dẫn lệnh test đúng cho bản `04-api-gateway/develop` và `production` theo lưu ý K5 (`/auth/token`, `student`/`demo123`), phân tích thuật toán rate limiter và cách triển khai Cost Guard.
+  - *Đã nhận:* Các lệnh `curl -i` kiểm tra `401`, `403`, `200`, vòng lặp chạm ngưỡng `429`, và giải thích luồng JWT + Cost Guard.
+  - *Tự kiểm tra:* Tự chạy cả 2 server trên WSL2, tự lấy JWT token, kiểm tra `/me/usage` và chạy vòng lặp 12 request để xác nhận chuyển từ `200` sang `429` đúng tại request thứ 11 (đã che token trước khi lưu).
