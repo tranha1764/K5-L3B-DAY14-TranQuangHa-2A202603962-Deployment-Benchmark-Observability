@@ -20,6 +20,30 @@
 
 ## 2. Benchmark hiệu năng (develop, `load_test.py`)
 
+### Exercise 7.1 — Metrics & Cardinality (`develop/app.py`)
+
+- **3 loại metric quan sát được từ `/metrics`:**
+  - `http_requests_total{method="POST",route="/ask",status="200"} 1.0` → **Counter** (chỉ tăng, dùng với `rate()` để tính RPS).
+  - `agent_in_flight_requests 0.0` → **Gauge** (lên xuống, theo dõi số request đang xử lý tại thời điểm hiện tại).
+  - `http_request_duration_seconds_bucket{...}` → **Histogram** (phân bố độ trễ vào các bucket để tính `p50`/`p95`/`p99` qua `histogram_quantile()`).
+- **Vì sao middleware `observe_requests` dùng `route.path` (và `unmatched`) thay vì `request.url.path`?** Nếu dùng URL thô làm label, khi bot quét gửi hàng nghìn đường dẫn lạ như `/wp-admin`, `/.env`, `/a1b2c3`, mỗi URL tạo ra một time series mới làm **cardinality bùng nổ** và ngốn hết RAM của Prometheus. Dùng `route.path` template và gom URL không khớp vào `unmatched` giúp số lượng giá trị label hữu hạn.
+- **Bổ sung metric `agent_question_length_chars` (`Histogram`) vào `develop/app.py` và kiểm chứng `/metrics` sau khi gọi `POST /ask`:**
+
+```text
+http_requests_total{method="POST",route="/ask",status="200"} 1.0
+agent_in_flight_requests 0.0
+agent_question_length_chars_bucket{le="20.0"} 0.0
+agent_question_length_chars_bucket{le="50.0"} 1.0
+agent_question_length_chars_bucket{le="100.0"} 1.0
+agent_question_length_chars_bucket{le="200.0"} 1.0
+agent_question_length_chars_bucket{le="500.0"} 1.0
+agent_question_length_chars_bucket{le="1000.0"} 1.0
+agent_question_length_chars_bucket{le="2000.0"} 1.0
+agent_question_length_chars_bucket{le="+Inf"} 1.0
+agent_question_length_chars_count 1.0
+agent_question_length_chars_sum 40.0
+```
+
 ### 2.1 Concurrency vs latency (agent v2)
 
 *(Nguồn: `reports/load_v2_c1.json`, `load_v2_c10.json`, `load_v2_c50.json`, `load_v2_c100.json`, mỗi mức 300 requests, SLO p95 ≤ 500ms, error rate ≤ 2.0%)*
@@ -76,7 +100,7 @@ Agent `v2` (có bước retrieval RAG) tiêu tốn gấp ~1.9 lần token mỗi 
 
 **CI Quality Gate (`.github/workflows/eval.yml`):**
 
-Job CI khởi chạy agent `v2` với `MOCK_ERROR_RATE=0` và chạy `python eval/run_eval.py --url http://localhost:8000 --min-accuracy 0.85`. Script `run_eval.py` trả về **exit code `1`** nếu `accuracy < 0.85` hoặc có câu nào bị regression so với baseline, làm step CI fail và tự động chặn không cho merge Pull Request.
+Eval local với `--baseline` đã xác minh agent `v2` sau khi sửa `KNOWLEDGE_BASE` đạt **100.0% (23/23)** và **0 regression** (`eval_v2_fixed.json`). Về phần tự động hóa, workflow `.github/workflows/eval.yml` được cấu hình chạy khi có `pull_request` để kiểm tra ngưỡng `--min-accuracy 0.85` (hiện GitHub Actions chưa có lượt chạy do repo chỉ push trực tiếp lên `main`). Để bắt regression trên CI cần truyền thêm `--baseline`, và để tự động chặn merge cần bật job `eval` làm required status check trong cài đặt branch protection của GitHub.
 
 ---
 
@@ -116,9 +140,15 @@ Job CI khởi chạy agent `v2` với `MOCK_ERROR_RATE=0` và chạy `python eva
 
 **1. Trace chậm nhất tìm được trong Jaeger (`screenshots/jaeger-slow-trace.png`):**
 
-- `trace_id`: `2dc21e16efa3cfe05c6661336f75a1f5`
-- Tổng thời gian (`POST /ask` → `agent.run`): `1.7s` (~`1700 ms`)
-- Span chiếm nhiều thời gian nhất: `chat mock-llm-small` (`1.6s` / `1600 ms`, chiếm **~94%** tổng thời gian; bước `agent.retrieve_context` chỉ mất `18.2 ms` — chứng minh nút thắt là tail latency phía LLM chứ không phải retrieval).
+- `trace_id`: `ce5bd10d122cacc48ff24e30684f2879`
+- Tổng thời gian (`POST /ask`): `1699.3 ms` (`~1.70 s`; `agent.run`: `1696.7 ms`)
+- Span chiếm nhiều thời gian nhất: `chat mock-llm-small` (`1672.9 ms`, chiếm **98.4%** tổng thời gian; bước `agent.retrieve_context` chỉ mất `23.2 ms` — chứng minh nút thắt là tail latency phía LLM chứ không phải retrieval).
+- Dòng log JSON tương ứng (grep theo `trace_id`):
+
+```json
+{"ts": "2026-11-26T15:44:36.151054+00:00", "level": "INFO", "service": "observable-agent", "instance": "fdc205d35d51", "event": "llm_call", "trace_id": "ce5bd10d122cacc48ff24e30684f2879", "span_id": "023d6a93045dc4fa", "request_id": "01630a4ca717", "model": "mock-llm-small", "agent_version": "v2", "input_tokens": 81, "output_tokens": 46, "cost_usd": 4e-05, "llm_ms": 1672.9}
+{"ts": "2026-11-26T15:44:36.151531+00:00", "level": "INFO", "service": "observable-agent", "instance": "fdc205d35d51", "event": "http_request", "trace_id": "ce5bd10d122cacc48ff24e30684f2879", "span_id": "023d6a93045dc4fa", "request_id": "01630a4ca717", "method": "POST", "route": "/ask", "status": 200, "ms": 1698.6}
+```
 
 **2. Trace lỗi khớp log JSON (`screenshots/jaeger-error-trace.png`):**
 
@@ -143,7 +173,7 @@ Job CI khởi chạy agent `v2` với `MOCK_ERROR_RATE=0` và chạy `python eva
 
 **Giải thích kết quả:** Scale có cải thiện p95 không? Nút thắt nằm ở đâu?
 
-Scale từ `1` lên `3` instance giữ nguyên RPS (`~61 req/s`) và hầu như **không làm thay đổi `p95`** (`230 ms` → `220 ms`, `p50` giữ `190 ms`, `p99` giữ `1700 ms`). Lý do gồm hai điểm:
+Scale từ `1` lên `3` instance giữ nguyên RPS (`~61 req/s`) và hầu như **không làm thay đổi `p95`**: ở dòng `Aggregated` (gộp `/ask` và `/health`), `p95` giảm nhẹ từ `230 ms` → `220 ms`, còn xét riêng endpoint `POST /ask` thì `p95` vẫn giữ nguyên **`230 ms` → `230 ms`** (`p50` giữ `190 ms`, `p99` giữ `1700 ms`). Lý do gồm hai điểm:
 1. Ở mức tải 100 user có `wait_time = between(0.5, 2)` giây trong `locustfile.py`, tổng lưu lượng sinh ra chỉ khoảng ~61 req/s — 1 instance FastAPI bất đồng bộ (`async`) chưa bị bão hòa CPU, nên tăng lên 3 instance không làm RPS tăng thêm.
 2. **Nút thắt nằm ở latency phía upstream LLM** (`MOCK_LATENCY_MS=120ms + jitter + tail 1500ms`, thể hiện rõ trên Jaeger ở span `chat mock-llm-small` chiếm ~94% thời gian xử lý). Việc tăng số container agent chỉ tăng khả năng chịu tải đồng thời khi CPU bão hòa, không rút ngắn được thời gian chờ mỗi lần gọi LLM.
 
