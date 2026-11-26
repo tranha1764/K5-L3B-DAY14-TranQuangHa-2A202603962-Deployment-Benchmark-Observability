@@ -229,7 +229,86 @@ HTTP/1.1 429 Too Many Requests
 
 ## Part 5: Scaling & Reliability
 
-*(Đang chờ hoàn thành CP4)*
+### Exercise 5.1: Health & Readiness Checks (`05-scaling-reliability/develop/app.py`)
+
+- **Phân biệt Liveness (`/health`) vs Readiness (`/ready`):**
+  - `GET /health` (**Liveness probe**): Kiểm tra tiến trình app còn sống hay không (dòng 104–144). Platform dùng để quyết định có cần restart container hay không — **không** nên để `/health` fail chỉ vì một service phụ như Redis bị gián đoạn tạm thời.
+  - `GET /ready` (**Readiness probe**): Kiểm tra app đã sẵn sàng nhận traffic chưa (khởi động xong model/kết nối Redis chưa, có đang shutdown không — dòng 147–168). Trả `200` khi sẵn sàng và `503` khi chưa sẵn sàng để load balancer tạm ngắt đẩy traffic mới vào instance này.
+
+Kết quả test thực tế:
+
+```json
+// GET /health
+{"status":"ok","uptime_seconds":18.1,"version":"1.0.0","environment":"development","timestamp":"2026-11-26T09:29:28.431079+00:00","checks":{"memory":{"status":"ok","used_percent":8.7}}}
+
+// GET /ready
+{"ready":true,"in_flight_requests":1}
+```
+
+### Exercise 5.2: Graceful Shutdown
+
+- **Cơ chế hoạt động:** Khi nhận `SIGTERM` (`handle_sigterm` + `uvicorn` `lifespan`), server đặt `_is_ready = False` (để `/ready` trả `503`, load balancer ngừng gửi request mới), tiếp tục xử lý hết các request đang chạy dở (`_in_flight_requests`, tối đa `timeout_graceful_shutdown=30`), rồi mới đóng hoàn toàn.
+- **Kết quả test thực tế:** Gửi 2 request `POST /ask` chạy song song (mock LLM delay 3s) rồi gửi `kill -SIGTERM` sau 0.5s:
+
+```http
+HTTP/1.1 200 OK
+{"answer":"Container là cách đóng gói app để chạy ở mọi nơi. Build once, run anywhere!"}
+
+HTTP/1.1 200 OK
+{"answer":"Tôi là AI agent được deploy lên cloud. Câu hỏi của bạn đã được nhận."}
+```
+
+Log server ở Terminal 1 xác nhận cả 2 request đều trả `200 OK` trước khi tắt hoàn toàn:
+
+```text
+INFO:     Shutting down
+INFO:     127.0.0.1:57456 - "POST /ask?question=docker HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57454 - "POST /ask?question=hello HTTP/1.1" 200 OK
+INFO:     Waiting for application shutdown.
+2026-11-26 09:30:00,214 INFO 🔄 Graceful shutdown initiated...
+2026-11-26 09:30:00,214 INFO ✅ Shutdown complete
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1543]
+2026-11-26 09:30:00,214 INFO Received signal 15 — uvicorn will handle graceful shutdown
+```
+
+### Exercise 5.3, 5.4 & 5.5: Stateless Design, Load Balancing & Test (`05-scaling-reliability/production/`)
+
+- **Vì sao state lưu trong RAM hỏng khi chạy nhiều instance?** Khi scale lên 3 container (`--scale agent=3`), mỗi container có vùng nhớ RAM riêng. Nếu lưu `conversation_history` trong dict in-memory, request 1 vào `instance-1` còn request 2 bị Nginx round-robin sang `instance-2` sẽ bị mất lịch sử hội thoại.
+- **Giải pháp:** Lưu toàn bộ session và history ra **Redis** dùng chung (`save_session` dùng `setex` với TTL 3600s, `load_session` dùng `get`), giúp mọi instance đều phục vụ được bất kỳ user nào.
+
+Trạng thái stack `docker compose -p k5-day14-scaling ps` (3 agent + nginx cổng `8080` + redis):
+
+```text
+NAME                       SERVICE   STATUS
+k5-day14-scaling-agent-1   agent     Up (healthy)
+k5-day14-scaling-agent-2   agent     Up (healthy)
+k5-day14-scaling-agent-3   agent     Up (healthy)
+k5-day14-scaling-nginx-1   nginx     Up (0.0.0.0:8080->80/tcp)
+k5-day14-scaling-redis-1   redis     Up (healthy)
+```
+
+Kết quả chạy `python test_stateless.py`:
+
+```text
+Session ID: 60c88cfd-e7af-4ee0-8ea6-cb46d78ca2eb
+
+Request 1: [instance-83aa78]  (What is Docker?)
+Request 2: [instance-0ad1ce]  (Why do we need containers?)
+Request 3: [instance-0948ed]  (What is Kubernetes?)
+Request 4: [instance-83aa78]  (How does load balancing work?)
+Request 5: [instance-0ad1ce]  (What is Redis used for?)
+
+Total requests: 5
+Instances used: {'instance-83aa78', 'instance-0ad1ce', 'instance-0948ed'}
+✅ All requests served despite different instances!
+
+--- Conversation History ---
+Total messages: 10
+✅ Session history preserved across all instances via Redis!
+```
+
+- **Giải thích:** Nginx phân tải đều 5 request qua cả 3 container agent (`instance-83aa78`, `instance-0ad1ce`, `instance-0948ed`), nhưng toàn bộ 5 lượt hỏi-đáp (10 messages) vẫn giữ nguyên vẹn vì state được lưu tập trung tại Redis.
 
 ---
 
@@ -253,3 +332,7 @@ HTTP/1.1 429 Too Many Requests
   - *Đã hỏi AI:* Hướng dẫn lệnh test đúng cho bản `04-api-gateway/develop` và `production` theo lưu ý K5 (`/auth/token`, `student`/`demo123`), phân tích thuật toán rate limiter và cách triển khai Cost Guard.
   - *Đã nhận:* Các lệnh `curl -i` kiểm tra `401`, `403`, `200`, vòng lặp chạm ngưỡng `429`, và giải thích luồng JWT + Cost Guard.
   - *Tự kiểm tra:* Tự chạy cả 2 server trên WSL2, tự lấy JWT token, kiểm tra `/me/usage` và chạy vòng lặp 12 request để xác nhận chuyển từ `200` sang `429` đúng tại request thứ 11 (đã che token trước khi lưu).
+- **CP4 (Part 5):**
+  - *Đã hỏi AI:* Giải thích Liveness vs Readiness, cơ chế Graceful Shutdown, thiết kế stateless với Redis và lệnh chạy stack 3 instance theo lưu ý K5 (`-p k5-day14-scaling`, cổng `8080`, `POST /chat`).
+  - *Đã nhận:* Lệnh test song song `curl` + `kill -SIGTERM` và các bước chạy `docker compose` scale 3 agent + `test_stateless.py`.
+  - *Tự kiểm tra:* Tự chạy test graceful shutdown xác nhận cả 2 request đang chạy vẫn trả `200 OK` sau `SIGTERM`, tự scale 3 container agent và chạy `test_stateless.py` xác nhận traffic đi qua 3 instance khác nhau nhưng vẫn giữ đủ 10 messages trong Redis.
