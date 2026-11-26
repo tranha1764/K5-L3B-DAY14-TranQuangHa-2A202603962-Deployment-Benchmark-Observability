@@ -314,7 +314,32 @@ Total messages: 10
 
 ## Part 6: Production Readiness Checklist (`check_production_ready.py`)
 
-*(Đang chờ hoàn thành CP5)*
+Kết quả chạy đầy đủ `python check_production_ready.py` trong `06-lab-complete/` trên WSL2 (có Docker):
+
+- **Kích thước Docker image:** `238 MB` (build `22s`)
+- **Graceful shutdown:** `SIGTERM` exit code `0`; `docker stop` exit code `0` (`0.7s`)
+- **Structured logging:** `7 dòng JSON` hợp lệ
+
+```text
+================================================================
+  📋 Checklist Deliverable
+     ✅ Dockerfile (multi-stage, < 500 MB)
+     ✅ docker-compose.yml (agent + redis)
+     ✅ .dockerignore
+     ✅ Health check endpoint (GET /health)
+     ✅ Readiness endpoint (GET /ready)
+     ✅ API Key authentication
+     ✅ Rate limiting
+     ✅ Cost guard
+     ✅ Config từ environment variables
+     ✅ Structured logging
+     ✅ Graceful shutdown
+     ✅ Public URL ready (Railway / Render config)
+----------------------------------------------------------------
+  Result: 12/12 tiêu chí đạt · 43/43 checks passed
+  🎉 PASS 12/12 — PRODUCTION READY! Deploy nào!
+================================================================
+```
 
 ---
 
@@ -336,3 +361,7 @@ Total messages: 10
   - *Đã hỏi AI:* Giải thích Liveness vs Readiness, cơ chế Graceful Shutdown, thiết kế stateless với Redis và lệnh chạy stack 3 instance theo lưu ý K5 (`-p k5-day14-scaling`, cổng `8080`, `POST /chat`).
   - *Đã nhận:* Lệnh test song song `curl` + `kill -SIGTERM` và các bước chạy `docker compose` scale 3 agent + `test_stateless.py`.
   - *Tự kiểm tra:* Tự chạy test graceful shutdown xác nhận cả 2 request đang chạy vẫn trả `200 OK` sau `SIGTERM`, tự scale 3 container agent và chạy `test_stateless.py` xác nhận traffic đi qua 3 instance khác nhau nhưng vẫn giữ đủ 10 messages trong Redis.
+- **CP5 (Part 6):**
+  - *Đã hỏi AI:* Thiết kế và triển khai toàn bộ các TODO trong `06-lab-complete/` (config env, Redis client, API key auth, Redis sliding-window rate limiter, Redis cost guard, structured JSON logging, lifespan graceful shutdown, multi-stage Dockerfile, docker-compose, `.dockerignore`, `.env.example`, `railway.toml`, `render.yaml`).
+  - *Đã nhận:* Kế hoạch chi tiết và mã nguồn cho 12 file trong `06-lab-complete/`.
+  - *Tự kiểm tra:* Tự chạy `python check_production_ready.py` đầy đủ trong WSL2 có Docker và xác nhận đạt `12/12 tiêu chí · 43/43 checks passed` (`PASS 12/12`).
